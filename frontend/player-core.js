@@ -1,6 +1,6 @@
 const CFG = window.GROUP_CONFIG;
 
-const API_BASE    = 'http://localhost:3000/api';
+const API_BASE    = 'https://eyetrack-8w58.onrender.com';
 const CAM_W       = 320, CAM_H = 240;
 const EPOCHS      = CFG.epochs;
 const CONF        = 0.5;
