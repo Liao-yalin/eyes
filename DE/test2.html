@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebGazer 校正</title>
+    <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        .calibration-point {
+            position: fixed;
+            width: 50px;
+            height: 50px;
+            background: red;
+            border: 3px solid black;
+            border-radius: 50%;
+            cursor: pointer;
+            z-index: 9999;
+        }
+        #instructions {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            font-size: 18px;
+            background: rgba(255,255,255,0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 10000;
+        }
+    </style>
+</head>
+<body>
+    <div id="instructions">請點擊每個紅點 5 次以校正視線。</div>
+
+    <script>
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+
+        // 校正點座標
+        const points = [
+            {x: w*0.1, y: h*0.1}, {x: w*0.5, y: h*0.1}, {x: w*0.9, y: h*0.1},
+            {x: w*0.1, y: h*0.5}, {x: w*0.5, y: h*0.5}, {x: w*0.9, y: h*0.5},
+            {x: w*0.1, y: h*0.9}, {x: w*0.5, y: h*0.9}, {x: w*0.9, y: h*0.9},
+        ];
+        const clicksRequired = 5;
+        let clicksCount = Array(points.length).fill(0);
+
+        function createCalibrationPoints() {
+            points.forEach((pt, index) => {
+                const div = document.createElement('div');
+                div.className = 'calibration-point';
+                div.style.left = (pt.x - 25) + 'px';
+                div.style.top = (pt.y - 25) + 'px';
+                div.addEventListener('click', () => handleClick(index, div));
+                document.body.appendChild(div);
+            });
+        }
+
+        function handleClick(index, div) {
+            clicksCount[index]++;
+            webgazer.recordScreenPosition(div.offsetLeft + 25, div.offsetTop + 25, 'click');
+
+            if (clicksCount[index] >= clicksRequired) {
+                div.style.background = 'green';
+            }
+
+            if (clicksCount.every(c => c >= clicksRequired)) {
+                document.getElementById('instructions').innerText = '校正完成！紅點會跟隨你的眼睛。';
+                hideCalibrationPoints();
+            }
+        }
+
+        function hideCalibrationPoints() {
+            document.querySelectorAll('.calibration-point').forEach(div => div.style.display = 'none');
+        }
+
+        window.addEventListener('load', () => {
+            createCalibrationPoints();
+
+            webgazer.setRegression('ridge')
+                    .setTracker('clmtrackr')
+                    .showPredictionPoints(true)      // 顯示紅點
+                    .showVideo(true)                 // 顯示鏡頭畫面
+                    .showFaceOverlay(true)           // 顯示臉部追蹤框
+                    .showFaceFeedbackBox(true)       // 顯示眼睛位置
+                    .begin()
+                    .then(() => {
+                        console.log("WebGazer 已啟動");
+                        // 儲存模型資料，下次開頁面不用重新校正
+                        //webgazer.saveDataAcrossSessions(true);
+                    });
+
+            // 關閉滑鼠干擾
+            webgazer.setMouseMovingAverageTime(0);
+        });
+    </script>
+</body>
+</html>

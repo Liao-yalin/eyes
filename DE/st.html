@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>學生介面</title>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <!-- WebGazer 官方 CDN -->
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+
+  <style>
+    body { margin: 0; font-family: sans-serif; text-align: center; }
+
+    /* 校正鈕 */
+    .Calibration {
+      width: 30px;
+      height: 30px;
+      background-color: red;
+      border-radius: 50%;
+      border: 2px solid black;
+      position: absolute;
+      opacity: 0.7;
+      cursor: pointer;
+      z-index: 9999;
+    }
+
+    /* 影片區塊 */
+    #videoWrapper {
+      display: none;
+      margin-top: 40px;
+      position: relative;
+    }
+
+    /* 眼睛追蹤顯示點 */
+    #eyeDot {
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      background: red;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 10001;
+    }
+
+    #startBtn {
+      display: none;
+      font-size: 18px;
+      padding: 10px 20px;
+      margin-top: 20px;
+    }
+
+    #Accuracy {
+      margin: 10px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+
+<h2 id="Accuracy">尚未校正</h2>
+
+<!-- 9 點校正 -->
+<div id="calibrationContainer"></div>
+
+<button id="startBtn" class="btn btn-primary">開始播放影片</button>
+
+<div id="videoWrapper">
+  <video id="video" width="640" controls src="videos/test.mp4"></video>
+  <div id="eyeDot"></div>
+</div>
+
+<script>
+/* -------------------------------
+   建立 9 點校正按鈕
+-------------------------------- */
+const container = document.getElementById("calibrationContainer");
+const points = [];
+const clicksNeeded = 5;
+let clickCount = Array(9).fill(0);
+
+function createPoints() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  console.log("=== createPoints() start ===");
+  console.log("視窗寬度 w =", w);
+  console.log("視窗高度 h =", h);
+
+  const positions = [
+    [0.1, 0.1],[0.5, 0.1],[0.9, 0.1],
+    [0.1, 0.5],[0.5, 0.5],[0.9, 0.5],
+    [0.1, 0.9],[0.5, 0.9],[0.9, 0.9]
+  ];
+
+  positions.forEach((pos, i) => {
+    const pt = document.createElement("button");
+    pt.className = "Calibration";
+    pt.id = "pt" + i;
+    pt.style.left = (w * pos[0] - 15) + "px";
+    pt.style.top = (h * pos[1] - 15) + "px";
+
+    pt.onclick = () => handleCalibration(i, pt);
+    container.appendChild(pt);
+  });
+}
+
+function handleCalibration(i, element) {
+  clickCount[i]++;
+
+
+  const rect = element.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top  + rect.height / 2;
+
+  console.log("校正點 index =", i, "校正座標 = (", cx, ",", cy, ")");
+
+  webgazer.recordScreenPosition(cx, cy, "click");
+
+  if (clickCount[i] >= clicksNeeded) {
+    element.style.background = "green";
+  }
+
+  // 全部校正完成
+  if (clickCount.every(c => c >= clicksNeeded)) {
+    document.getElementById("Accuracy").innerText = "校正完成！";
+    Swal.fire("校正完成", "開始播放影片", "success");
+
+    hideCalibrationPoints();
+    setTimeout(startVideoAutomatically, 800);
+  }
+}
+
+
+function hideCalibrationPoints() {
+  document.querySelectorAll(".Calibration").forEach(b => b.style.display = "none");
+}
+
+/* -------------------------------
+   啟動 WebGazer
+-------------------------------- */
+let trackingEnabled = false;
+let focusRegion = null;
+
+window.onload = function () {
+  createPoints();
+
+  webgazer.setRegression('ridge')
+    .showVideo(true)
+    .showPredictionPoints(true) // 原始預測點
+    .showFaceOverlay(false)
+    .showFaceFeedbackBox(true)
+    .begin()
+    .then(() => console.log("WebGazer 啟動成功"));
+
+  initEyeTracking();
+};
+
+
+/* -------------------------------
+   播放影片
+-------------------------------- */
+
+function startVideoAutomatically() {
+    const video = document.getElementById("video");
+    const wrapper = document.getElementById("videoWrapper");
+    wrapper.style.display = "block";
+
+    const rect = video.getBoundingClientRect();
+    focusRegion = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    console.log("影片 focusRegion 設定為：", focusRegion);
+    trackingEnabled = true;
+    video.play();
+}
+/* -------------------------------
+   眼追控制
+-------------------------------- */
+function initEyeTracking() {
+  const eyeDot = document.getElementById("eyeDot");
+
+  let history = [];
+  const MAX_HISTORY = 5;  // 可以 3~5，看你想多平滑
+
+  webgazer.setGazeListener(data => {
+    if (!data) return;
+
+    console.log("原始 gaze data = ", data);
+
+    // 收集最近幾筆資料
+    history.push({ x: data.x, y: data.y });
+    if (history.length > MAX_HISTORY) history.shift();
+
+    const avgX = history.reduce((s, p) => s + p.x, 0) / history.length;
+    const avgY = history.reduce((s, p) => s + p.y, 0) / history.length;
+
+    // 直接用移動平均當作目前眼睛位置
+    const sx = avgX;
+    const sy = avgY;
+
+    console.log("平滑後 sx =", sx, "sy =", sy);
+
+    // 顯示紅色 eyeDot
+    eyeDot.style.left = (sx - 5) + "px";
+    eyeDot.style.top  = (sy - 5) + "px";
+
+    if (!trackingEnabled || !focusRegion) {
+      console.log("trackingEnabled 或 focusRegion 尚未啟動");
+      return;
+    }
+
+    const { x, y, width, height } = focusRegion;
+
+
+    const margin = 30; 
+
+    const inside =
+      sx >= x - margin && sx <= x + width + margin &&
+      sy >= y - margin && sy <= y + height + margin;
+
+
+    console.log("focusRegion =", focusRegion, "inside =", inside);
+
+    const video = document.getElementById("video");
+
+    if (!inside && !video.paused) {
+      video.pause();
+      console.log("視線離開影片區塊，暫停影片");
+    } else if (inside && video.paused) {
+      video.play();
+      console.log("視線回到影片區塊，繼續播放");
+    }
+  });
+}
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MediaPipe Iris - 終極優化版</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background: #000; color: white; }
+    
+    /* 容器使用 dvh 適應平板工具列 */
+    #video-container { 
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100dvh; 
+      display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; 
+    }
+
+    #video-wrapper { position: relative; width: 900px; max-width: 85vw; border-radius: 12px; overflow: hidden; box-shadow: 0 0 30px rgba(0,0,0,0.5); }
+    #video-container:fullscreen #video-wrapper { width: 100vw; height: 100vh; max-width: 100vw; border-radius: 0; }
+    #video-container:fullscreen #content-video { height: 100%; object-fit: contain; }
+
+    #content-video { width: 100%; display: block; }
+    
+    /* UI 元素加入 transition 以支援自動隱藏淡出 */
+    #status, #eye-cursor, #custom-controls { transition: opacity 0.5s ease; opacity: 1; }
+
+    #status { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.85); padding: 15px; border-radius: 10px; border-left: 6px solid #ff4757; font-size: 15px; z-index: 101; }
+    
+    /* 校正點：放大並居中對齊 */
+    #calibration-dot { position: absolute; width: 35px; height: 35px; background: #ff4757; border: 5px solid #fff; border-radius: 50%; display: none; cursor: pointer; z-index: 102; transform: translate(-50%, -50%); }
+    
+    #eye-cursor { position: absolute; width: 20px; height: 20px; background: #00ff00; border: 2px solid white; border-radius: 50%; pointer-events: none; z-index: 1000; display: none; box-shadow: 0 0 10px #00ff00; transform: translate(-50%, -50%); }
+
+    #custom-controls { position: absolute; bottom: 0; width: 100%; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; padding: 10px; box-sizing: border-box; gap: 15px; z-index: 20; }
+    #progress-container { flex-grow: 1; height: 8px; background: #555; border-radius: 4px; overflow: hidden; pointer-events: none; }
+    #progress-bar { width: 0%; height: 100%; background: #2ed573; transition: width 0.1s linear; }
+    #custom-controls button, #speed-select { background: #444; border: none; color: white; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+    
+    /* 重新校正按鈕樣式 */
+    #btn-recalibrate { position: absolute; top: 15%; left: 50%; transform: translate(-50%, -50%); background: rgba(255, 165, 0, 0.9); color: #000; padding: 15px 25px; border-radius: 10px; font-weight: bold; display: none; z-index: 100; text-align: center; }
+
+    #fullscreen-reminder { position: absolute; top: 15%; left: 50%; transform: translate(-50%, -50%); background: rgba(255, 165, 0, 0.9); color: #000; padding: 15px 25px; border-radius: 10px; font-weight: bold; display: none; z-index: 100; text-align: center; }
+    #video-input { position: fixed; right: 20px; bottom: 20px; width: 160px; transform: scaleX(-1); border: 2px solid #555; border-radius: 10px; opacity: 0.7; z-index: 5; }
+  </style>
+</head>
+<body>
+
+<div id="video-container">
+  <div id="status">正在啟動攝影機...</div>
+  <div id="calibration-dot"></div>
+  <div id="eye-cursor"></div>
+  
+  <div id="video-wrapper">
+    <video id="content-video" playsinline><source src="videos/test.mp4" type="video/mp4"></video>
+    <div id="custom-controls">
+      <button id="btn-play-pause">播放</button>
+      <div id="progress-container"><div id="progress-bar"></div></div>
+      <span id="time-txt" style="font-size:12px">00:00</span>
+      <select id="speed-select"><option value="0.5">0.5x</option><option value="1" selected>1.0x</option><option value="1.5">1.5x</option><option value="2">2.0x</option></select>
+      <button id="btn-recalibrate">重新校正</button>
+      <button id="btn-fullscreen">全螢幕</button>
+    </div>
+  </div>
+</div>
+<video id="video-input" playsinline muted></video>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const contentVideo = $('content-video');
+const btnPlay = $('btn-play-pause');
+const statusMsg = $('status');
+const dot = $('calibration-dot');
+const cursor = $('eye-cursor');
+const videoContainer = $('video-container');
+const videoWrapper = $('video-wrapper');
+const videoInput = $('video-input');
+
+let videoRect = null, isLearningStarted = false, faceMesh, regressor;
+let trainingData = { inputs: [], outputs: [] }, isCalibrating = false, currentFeatures = null, isManuallyPaused = true;
+let uiTimer;
+
+// --- 1. 自動隱藏邏輯 ---
+function showUI() {
+    [statusMsg, cursor, $('custom-controls')].forEach(el => el.style.opacity = '1');
+    clearTimeout(uiTimer);
+    if (!contentVideo.paused) uiTimer = setTimeout(hideUI, 3000); 
+}
+function hideUI() {
+    if (contentVideo.paused || !isLearningStarted) return; 
+    [statusMsg, cursor, $('custom-controls')].forEach(el => el.style.opacity = '0');
+}
+window.addEventListener('mousemove', showUI);
+window.addEventListener('pointerdown', showUI);
+
+// --- 2. 核心初始化 (解決偵測不到的問題) ---
+async function init() {
+    faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+    
+    faceMesh.setOptions({ 
+        maxNumFaces: 1, 
+        refineLandmarks: true, // 必須為 true 才能抓到眼球特徵
+        minDetectionConfidence: 0.5, // 降低門檻，增加環境適應力
+        minTrackingConfidence: 0.5 
+    });
+
+    faceMesh.onResults(onResults);
+    
+    // 平板優化：使用適中解析度
+    const camera = new Camera(videoInput, { 
+        onFrame: async () => await faceMesh.send({image: videoInput}), 
+        width: 480, height: 360 
+    });
+    camera.start();
+
+    statusMsg.innerText = "就緒。請確認右下角能看到自己，然後點擊螢幕開始。";
+    videoContainer.style.display = 'flex'; 
+    videoWrapper.style.opacity = '0.1';
+    
+    // 平板首觸發
+    const startHandler = () => {
+        window.removeEventListener('pointerdown', startHandler);
+        startCalibration();
+    };
+    window.addEventListener('pointerdown', startHandler);
+}
+
+function onResults(results) {
+    if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        currentFeatures = null;
+        if (isLearningStarted && !contentVideo.paused) { 
+            contentVideo.pause(); 
+            statusMsg.innerText = "🛑 找不到臉，請對準鏡頭"; 
+            showUI(); 
+        }
+        return;
+    }
+    const landmarks = results.multiFaceLandmarks[0];
+    
+    // 眼神特徵計算邏輯
+    const getEyeRel = (irisIdx, topIdx, botIdx, inIdx, outIdx) => {
+        const iris = landmarks[irisIdx], t = landmarks[topIdx], b = landmarks[botIdx], i = landmarks[inIdx], o = landmarks[outIdx];
+        if(!iris || !t || !b || !i || !o) return [0.5, 0.5];
+        return [(iris.x - o.x) / (i.x - o.x), (iris.y - t.y) / (b.y - t.y)];
+    };
+    
+    currentFeatures = [...getEyeRel(468, 159, 145, 133, 33), ...getEyeRel(473, 386, 374, 362, 263)].map(v => v * 2);
+    if (regressor && !isCalibrating) predictGaze(currentFeatures);
+}
+
+// --- 3. 校正與訓練 ---
+function startCalibration() {
+    isCalibrating = true; pIdx = 0; trainingData = { inputs: [], outputs: [] };
+    videoWrapper.style.opacity = '0.05'; showNext();
+}
+
+const points = [{x:0.1,y:0.1},{x:0.5,y:0.1},{x:0.9,y:0.1},{x:0.1,y:0.5},{x:0.5,y:0.5},{x:0.9,y:0.5},{x:0.1,y:0.9},{x:0.5,y:0.9},{x:0.9,y:0.9}];
+let pIdx = 0;
+
+function showNext() {
+    if (pIdx >= points.length) { train(); return; }
+    const p = points[pIdx];
+    dot.style.display = 'block';
+    dot.style.left = (p.x * videoContainer.clientWidth) + 'px';
+    dot.style.top = (p.y * videoContainer.clientHeight) + 'px';
+    
+    dot.onpointerdown = (e) => {
+        e.stopPropagation();
+        if (currentFeatures) {
+            for(let i=0; i<3; i++) { trainingData.inputs.push([...currentFeatures]); trainingData.outputs.push([p.x, p.y]); }
+            pIdx++; showNext();
+        } else {
+            alert("⚠️ 尚未偵測到您的臉，請確認右下角畫面並正對攝影機。");
+        }
+    };
+}
+
+async function train() {
+    dot.style.display = 'none';
+    statusMsg.innerText = "⏳ 正在訓練模型 (約 5 秒)...";
+    try {
+        await tf.setBackend('webgl');
+        regressor = tf.sequential();
+        regressor.add(tf.layers.dense({units: 64, activation: 'tanh', inputShape: [4]}));
+        regressor.add(tf.layers.dense({units: 32, activation: 'tanh'}));
+        regressor.add(tf.layers.dense({units: 2}));
+        regressor.compile({optimizer: tf.train.adam(0.005), loss: 'meanSquaredError'});
+        await regressor.fit(tf.tensor2d(trainingData.inputs), tf.tensor2d(trainingData.outputs), {epochs: 200});
+        
+        isCalibrating = false; isLearningStarted = true; isManuallyPaused = true;
+        videoWrapper.style.opacity = '1'; btnPlay.innerText = "播放"; statusMsg.innerText = "✅ 校正完成！";
+        cursor.style.display = 'block'; updateVideoRect();
+    } catch (err) { statusMsg.innerText = "❌ 訓練錯誤"; }
+}
+
+// --- 4. 視線預測與監控 ---
+let sX = 0.5, sY = 0.5;
+function predictGaze(features) {
+    tf.tidy(() => {
+        const pred = regressor.predict(tf.tensor2d([features])).dataSync();
+        let rawX = (pred[0] - 0.5) * 1.6 + 0.5, rawY = (pred[1] - 0.5) * 1.6 + 0.5;
+        const dist = Math.sqrt(Math.pow(rawX - sX, 2) + Math.pow(rawY - sY, 2));
+        let alpha = (dist > 0.1) ? 0.3 : 0.1;
+        sX = sX * (1 - alpha) + rawX * alpha; sY = sY * (1 - alpha) + rawY * alpha;
+        
+        const cw = videoContainer.clientWidth, ch = videoContainer.clientHeight;
+        cursor.style.left = (sX * cw) + 'px';
+        cursor.style.top = (sY * ch) + 'px';
+
+        if (!videoRect) updateVideoRect();
+        const inside = (sX * cw >= videoRect.left && sX * cw <= videoRect.right && sY * ch >= videoRect.top && sY * ch <= videoRect.bottom);
+        const outOfScreen = rawX < -0.1 || rawX > 1.1 || rawY < -0.1 || rawY > 1.1;
+
+        if (inside && !outOfScreen) {
+            if (!isManuallyPaused && contentVideo.paused) { contentVideo.play().catch(()=>{}); statusMsg.innerText = "正在播放"; }
+        } else if (!contentVideo.paused) {
+            contentVideo.pause(); 
+            statusMsg.innerText = outOfScreen ? "視線離開螢幕" : "視線偏離影片"; 
+            showUI(); 
+        }
+    });
+}
+
+function updateVideoRect() { videoRect = videoWrapper.getBoundingClientRect(); }
+function togglePlay() {
+    if (!isLearningStarted) return;
+    if (contentVideo.paused) { 
+        contentVideo.play().catch(()=>{}); btnPlay.innerText = "暫停"; isManuallyPaused = false; showUI();
+    } else { 
+        contentVideo.pause(); btnPlay.innerText = "播放"; isManuallyPaused = true; showUI();
+    }
+}
+function triggerRecalibrate() {
+    contentVideo.pause(); isManuallyPaused = true; isLearningStarted = false;
+    cursor.style.display = 'none'; videoWrapper.style.opacity = '0.1';
+    btnPlay.innerText = "播放"; showUI(); startCalibration();
+}
+
+// 事件綁定
+btnPlay.onpointerdown = (e) => { e.stopPropagation(); togglePlay(); };
+$('btn-recalibrate').onpointerdown = (e) => { e.stopPropagation(); triggerRecalibrate(); };
+$('btn-fullscreen').onpointerdown = (e) => { 
+    e.stopPropagation(); 
+    if (!document.fullscreenElement) videoContainer.requestFullscreen(); 
+    else document.exitFullscreen(); 
+};
+window.addEventListener('keydown', (e) => {
+    if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+    if (e.key.toLowerCase() === "r") triggerRecalibrate();
+});
+
+// 系統監控
+function forceSystemPause(reason) {
+    if (!isLearningStarted) return;
+    contentVideo.pause(); isManuallyPaused = true; btnPlay.innerText = "播放";
+    statusMsg.innerText = `🛑 ${reason}`; showUI();
+}
+window.addEventListener('blur', () => forceSystemPause("偵測到操作其他視窗"));
+document.addEventListener('visibilitychange', () => { if (document.hidden) forceSystemPause("已離開分頁"); });
+window.addEventListener('focus', () => { if (isLearningStarted && isManuallyPaused) { statusMsg.innerText = "歡迎回來"; showUI(); } });
+
+contentVideo.ontimeupdate = () => {
+    $('progress-bar').style.width = (contentVideo.currentTime / contentVideo.duration) * 100 + "%";
+    const m = Math.floor(contentVideo.currentTime / 60), s = Math.floor(contentVideo.currentTime % 60);
+    $('time-txt').innerText = `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+};
+
+const script = document.createElement('script');
+script.src = "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js";
+script.onload = init;
+document.head.appendChild(script);
+</script>
+</body>
+</html>

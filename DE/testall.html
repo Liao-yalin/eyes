@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>WebGazer 校正 + 影片播放</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      background: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .calibration-point {
+      position: fixed;
+      width: 50px;
+      height: 50px;
+      background: red;
+      border: 3px solid black;
+      border-radius: 50%;
+      cursor: pointer;
+      z-index: 9999;
+    }
+    #instructions {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      font-size: 18px;
+      background: rgba(255,255,255,0.8);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 10000;
+    }
+    #videoWrapper {
+      display: none;
+      position: relative;
+      width: 560px;
+      height: 315px;
+      margin: 20px 0;
+    }
+    #eyeDot {
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      background: red;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 10001;
+    }
+  </style>
+</head>
+<body>
+
+<div id="instructions">請點擊每個紅點 5 次以校正視線。</div>
+<div id="videoWrapper">
+  <div id="player"></div>
+  <div id="eyeDot"></div>
+</div>
+
+<!-- 載入 WebGazer 與 YouTube API -->
+<script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+
+<script>
+const w = window.innerWidth;
+const h = window.innerHeight;
+const points = [
+  {x:w*0.1,y:h*0.1},{x:w*0.5,y:h*0.1},{x:w*0.9,y:h*0.1},
+  {x:w*0.1,y:h*0.5},{x:w*0.5,y:h*0.5},{x:w*0.9,y:h*0.5},
+  {x:w*0.1,y:h*0.9},{x:w*0.5,y:h*0.9},{x:w*0.9,y:h*0.9}
+];
+const clicksRequired = 5;
+let clicksCount = Array(points.length).fill(0);
+
+function createCalibrationPoints(){
+  points.forEach((pt,index)=>{
+    const div=document.createElement('div');
+    div.className='calibration-point';
+    div.style.left=(pt.x-25)+'px';
+    div.style.top=(pt.y-25)+'px';
+    div.addEventListener('click',()=>handleClick(index,div));
+    document.body.appendChild(div);
+  });
+}
+
+function handleClick(index,div){
+  clicksCount[index]++;
+  webgazer.recordScreenPosition(div.offsetLeft+25,div.offsetTop+25,'click');
+  if(clicksCount[index]>=clicksRequired) div.style.background='green';
+  if(clicksCount.every(c=>c>=clicksRequired)){
+    document.getElementById('instructions').innerText='校正完成！影片即將開始';
+    hideCalibrationPoints();
+    startVideoAndTracking();
+  }
+}
+
+function hideCalibrationPoints(){
+  document.querySelectorAll('.calibration-point').forEach(div=>div.style.display='none');
+}
+
+window.addEventListener('load', ()=>{
+  createCalibrationPoints();
+  console.log("🔧 啟動 WebGazer...");
+  webgazer.setRegression('ridge')
+          .showVideo(true)
+          .showFaceOverlay(true)
+          .showPredictionPoints(true)
+          .showFaceFeedbackBox(true)
+          .begin()
+          .then(() => {
+            console.log("✅ WebGazer 啟動成功");
+          })
+          .catch(err => {
+            console.error("❌ WebGazer 啟動失敗", err);
+          });
+
+  setTimeout(() => {
+    const webcamFeed = document.querySelector('video');
+    if (webcamFeed) {
+      console.log("✅ Webcam 視窗已載入");
+    } else {
+      console.warn("⚠️ Webcam 視窗未載入，可能未授權或被阻擋");
+    }
+  }, 3000);
+});
+
+let player;
+let apiReady = false;
+
+function onYouTubeIframeAPIReady() {
+  apiReady = true;
+  console.log("✅ YouTube API 已準備好");
+}
+
+function startVideoAndTracking(){
+  if (!apiReady) {
+    console.log("⏳ 等待 YouTube API 載入中...");
+    setTimeout(startVideoAndTracking, 500);
+    return;
+  }
+
+  document.getElementById('videoWrapper').style.display='block';
+  console.log("🎬 建立播放器中...");
+
+  player = new YT.Player('player', {
+    height:'315',
+    width:'560',
+    videoId:'3LjfffmRdWY',
+    playerVars:{autoplay:1},
+    events:{
+      'onReady':(e)=>{
+        console.log("✅ 播放器準備好");
+        e.target.playVideo();
+      },
+      'onError':(e)=>{
+        console.error("❌ 播放器錯誤", e);
+      }
+    }
+  });
+
+  const eyeDot = document.getElementById('eyeDot');
+  let gazeHistory = [], MAX_HISTORY = 5;
+  let smoothX = 0, smoothY = 0;
+  const alpha = 0.2;
+
+  webgazer.setGazeListener(data => {
+    if (!data) {
+      console.warn("⚠️ 沒有偵測到視線資料");
+      return;
+    }
+
+    console.log("👁️ 視線座標：", data);
+
+    gazeHistory.push({x:data.x, y:data.y});
+    if (gazeHistory.length > MAX_HISTORY) gazeHistory.shift();
+
+    const avgX = gazeHistory.reduce((sum,p)=>sum+p.x,0)/gazeHistory.length;
+    const avgY = gazeHistory.reduce((sum,p)=>sum+p.y,0)/gazeHistory.length;
+
+    smoothX = alpha * avgX + (1 - alpha) * smoothX;
+    smoothY = alpha * avgY + (1 - alpha) * smoothY;
+
+    eyeDot.style.left = smoothX - 5 + 'px';
+    eyeDot.style.top = smoothY - 5 + 'px';
+
+    const rect = player.getIframe().getBoundingClientRect();
+    const inside = smoothX >= rect.left && smoothX <= rect.right &&
+                   smoothY >= rect.top && smoothY <= rect.bottom;
+
+    if (!inside && player.getPlayerState() === 1) {
+      console.log("⏸️ 視線離開影片區域，暫停播放");
+      player.pauseVideo();
+    } else if (inside && player.getPlayerState() !== 1) {
+      console.log("▶️ 視線回到影片區域，繼續播放");
+      player.playVideo();
+    }
+  });
+}
+</script>
+
+</body>
+</html>

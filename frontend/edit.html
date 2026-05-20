@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <title>教材製作工具</title>
+  <style>
+    body { font-family: sans-serif; background: #1a1a1a; color: #eee; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+    #editor-container { display: flex; gap: 20px; width: 100%; max-width: 1100px; }
+    #left-panel { flex: 2; position: relative; }
+    #video-wrapper { position: relative; background: #000; line-height: 0; }
+    video { width: 100%; height: auto; }
+    canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+    #controls { background: #333; padding: 10px; display: flex; align-items: center; gap: 10px; }
+    #right-panel { flex: 1; background: #262626; padding: 20px; border-radius: 8px; }
+    .zone-item { background: #444; padding: 10px; margin-bottom: 8px; border-left: 4px solid #2ed573; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+    .zone-item span { flex: 1; }
+    .zone-item button { background: #ff4757; border: none; color: white; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 12px; margin-left: 8px; }
+    button.main-btn { width: 100%; padding: 12px; margin-bottom: 10px; cursor: pointer; border: none; font-weight: bold; border-radius: 4px; }
+    #add-btn  { background: #2ed573; color: white; }
+    #sync-btn { background: #1e90ff; color: white; }
+    #clear-btn { background: #ff4757; color: white; }
+    #video-key-label { font-size: 13px; color: #2ed573; margin-bottom: 12px; word-break: break-all; min-height: 18px; }
+    #status-msg { font-size: 12px; min-height: 16px; margin-top: 6px; }
+    #status-msg.ok  { color: #2ed573; }
+    #status-msg.err { color: #ff4757; }
+  </style>
+</head>
+<body>
+
+<h2>教材標註與關注區域設定</h2>
+<div id="editor-container">
+  <div id="left-panel">
+    <input type="file" id="video-upload" accept="video/mp4" style="margin-bottom:10px;">
+    <div id="video-wrapper">
+      <video id="main-video"></video>
+      <canvas id="draw-canvas"></canvas>
+    </div>
+    <div id="controls">
+      <button id="play-pause">播放</button>
+      <input type="range" id="seek-bar" style="flex:1" value="0">
+    </div>
+  </div>
+  <div id="right-panel">
+    <h3 style="margin-top:0">標註清單</h3>
+    <div id="video-key-label">尚未載入影片</div>
+    <div id="zone-list"></div>
+    <input type="text" id="label-input" placeholder="輸入引導文字..." style="width:100%; padding:8px; margin-bottom:10px; box-sizing:border-box; background:#000; color:white; border:1px solid #555;">
+    <button id="add-btn"   class="main-btn">新增標註 (+)</button>
+    <button id="sync-btn"  class="main-btn">同步至雲端</button>
+    <button id="clear-btn" class="main-btn">清除全部標註</button>
+    <div id="status-msg"></div>
+    <p style="font-size:11px; color:#888; margin-top:8px;">操作：暫停影片 → 畫框 → 新增標註 → 同步。<br>上傳影片時會自動載入該影片已存在的標註。</p>
+  </div>
+</div>
+
+<script>
+const API_BASE = 'http://localhost:3000/api';
+
+const video    = document.getElementById('main-video');
+const canvas   = document.getElementById('draw-canvas');
+const ctx      = canvas.getContext('2d');
+const keyLabel = document.getElementById('video-key-label');
+const statusEl = document.getElementById('status-msg');
+
+let zones = [], isDrawing = false, startX, startY, currentRect = null;
+let videoKey = "";
+
+function setStatus(msg, type = 'ok') {
+  statusEl.textContent = msg;
+  statusEl.className = type;
+}
+
+
+document.getElementById('video-upload').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  videoKey = file.name.replace(/\.[^.]+$/, '').replace(/\s+/g, '_');
+  keyLabel.innerText = `目前影片：${videoKey}`;
+
+  video.src = URL.createObjectURL(file);
+  video.onloadedmetadata = () => {
+    canvas.width  = video.clientWidth;
+    canvas.height = video.clientHeight;
+  };
+
+  zones = [];
+  setStatus('載入標註中…');
+  try {
+    const res = await fetch(`${API_BASE}/annotations/${encodeURIComponent(videoKey)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    zones = await res.json();
+    keyLabel.innerText += `（已載入 ${zones.length} 筆標註）`;
+    setStatus(zones.length ? `載入 ${zones.length} 筆標註` : '尚無標註', 'ok');
+  } catch(err) {
+    keyLabel.innerText += '（載入失敗）';
+    setStatus('載入失敗：' + err.message, 'err');
+  }
+  updateList();
+};
+
+document.getElementById('play-pause').onclick = () => {
+  if (video.paused) { video.play();  document.getElementById('play-pause').innerText = "暫停"; }
+  else              { video.pause(); document.getElementById('play-pause').innerText = "播放"; }
+};
+video.ontimeupdate = () => {
+  const bar = document.getElementById('seek-bar');
+  if (video.duration) bar.value = video.currentTime / video.duration * 100;
+};
+document.getElementById('seek-bar').oninput = (e) => {
+  if (video.duration) video.currentTime = e.target.value / 100 * video.duration;
+};
+
+canvas.onmousedown = (e) => {
+  if (!video.paused) return;
+  isDrawing = true; startX = e.offsetX; startY = e.offsetY;
+};
+canvas.onmousemove = (e) => {
+  if (!isDrawing) return;
+  currentRect = { x: startX, y: startY, w: e.offsetX - startX, h: e.offsetY - startY };
+  redraw();
+};
+window.onmouseup = () => { isDrawing = false; };
+
+
+document.getElementById('add-btn').onclick = () => {
+  if (!currentRect || !videoKey) {
+    alert(!videoKey ? "請先上傳影片" : "請先在影片上畫框");
+    return;
+  }
+  zones.push({
+    startTime: Math.max(0, video.currentTime - 0.5),
+    endTime:   video.currentTime + 2.5,
+    xMin:  Math.min(currentRect.x, currentRect.x + currentRect.w) / canvas.width,
+    xMax:  Math.max(currentRect.x, currentRect.x + currentRect.w) / canvas.width,
+    yMin:  Math.min(currentRect.y, currentRect.y + currentRect.h) / canvas.height,
+    yMax:  Math.max(currentRect.y, currentRect.y + currentRect.h) / canvas.height,
+    label: document.getElementById('label-input').value || "請看這裡"
+  });
+  currentRect = null;
+  updateList();
+  setStatus(`已新增，共 ${zones.length} 筆（尚未同步）`);
+};
+
+function deleteZone(i) {
+  zones.splice(i, 1);
+  updateList();
+}
+
+
+document.getElementById('clear-btn').onclick = () => {
+  if (!confirm("確定要清除全部標註？")) return;
+  zones = []; currentRect = null; updateList();
+  setStatus('已清除（尚未同步至雲端）');
+};
+
+
+document.getElementById('sync-btn').onclick = async () => {
+  if (!videoKey) { alert("請先上傳影片"); return; }
+  setStatus('同步中…');
+  try {
+    const res = await fetch(`${API_BASE}/annotations/${encodeURIComponent(videoKey)}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(zones),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    setStatus(`同步成功！共 ${data.count} 筆`, 'ok');
+  } catch(err) {
+    setStatus('同步失敗：' + err.message, 'err');
+  }
+};
+
+
+function updateList() {
+  document.getElementById('zone-list').innerHTML = zones.length
+    ? zones.map((z, i) => `
+        <div class="zone-item">
+          <span>#${i+1} [${z.startTime.toFixed(1)}s ~ ${z.endTime.toFixed(1)}s]<br>${z.label}</span>
+          <button onclick="deleteZone(${i})">刪除</button>
+        </div>`).join('')
+    : '<p style="color:#888; font-size:13px;">尚無標註</p>';
+  redraw();
+}
+
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  zones.forEach((z, i) => {
+    const bx = z.xMin * canvas.width,  by = z.yMin * canvas.height;
+    const bw = (z.xMax - z.xMin) * canvas.width, bh = (z.yMax - z.yMin) * canvas.height;
+    ctx.strokeStyle = "rgba(46,213,115,.6)"; ctx.lineWidth = 1.5; ctx.setLineDash([6,4]);
+    ctx.strokeRect(bx, by, bw, bh);
+    ctx.font = "12px sans-serif"; ctx.fillStyle = "rgba(46,213,115,.9)";
+    ctx.fillText(`#${i+1} ${z.label}`, bx + 4, by + 14);
+    ctx.setLineDash([]);
+  });
+  if (currentRect) {
+    ctx.strokeStyle = "#2ed573"; ctx.lineWidth = 2; ctx.setLineDash([]);
+    ctx.strokeRect(currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>教師介面</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    #videoContainer { position: relative; display: inline-block; }
+    #videoCanvas {
+      position: absolute;
+      top: 0; left: 0;
+      border: 2px dashed blue;
+      cursor: crosshair;
+    }
+    #controls { margin-top: 20px; }
+    #output { white-space: pre-wrap; background: #f0f0f0; padding: 10px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+
+<h2>教師介面</h2>
+
+<input type="file" accept="video/mp4" id="videoUpload"><br><br>
+
+<div id="videoContainer">
+  <video id="video" width="640" controls></video>
+  <canvas id="videoCanvas" width="640" height="360"></canvas>
+</div>
+
+<div id="controls">
+  <label>標示區域時間：</label>
+  <input type="number" id="startTime" placeholder="開始秒數"> ~
+  <input type="number" id="endTime" placeholder="結束秒數">
+  <input type="text" id="label" placeholder="區域標籤">
+  <button id="saveRegion">儲存區域</button>
+  <button id="uploadData">上傳到雲端</button>
+</div>
+
+<div id="output"></div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+  import { getFirestore, doc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDaKUn1I2KtYqojG_dlK9zFu3PlssAYHDU",
+    authDomain: "eyes-cbf64.firebaseapp.com",
+    projectId: "eyes-cbf64",
+    storageBucket: "eyes-cbf64.appspot.com",
+    messagingSenderId: "562808351063",
+    appId: "1:562808351063:web:791af2a2ae1e625a66b612",
+    measurementId: "G-WLKHF014SE"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const storage = getStorage(app);
+  const db = getFirestore(app);
+
+  let video = document.getElementById('video');
+  let canvas = document.getElementById('videoCanvas');
+  let ctx = canvas.getContext('2d');
+  let regions = [];
+  let uploadedFile = null;
+  let startX, startY, currentX, currentY, isDrawing = false;
+
+  document.getElementById('videoUpload').addEventListener('change', e => {
+    uploadedFile = e.target.files[0];
+    if (uploadedFile) {
+      let url = URL.createObjectURL(uploadedFile);
+      video.src = url;
+    }
+  });
+
+  canvas.addEventListener('mousedown', e => {
+    startX = e.offsetX;
+    startY = e.offsetY;
+    isDrawing = true;
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    if (!isDrawing) return;
+    currentX = e.offsetX;
+    currentY = e.offsetY;
+    let w = currentX - startX;
+    let h = currentY - startY;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeRect(startX, startY, w, h);
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    isDrawing = false;
+  });
+
+  document.getElementById('saveRegion').addEventListener('click', () => {
+    const startTime = parseFloat(document.getElementById('startTime').value);
+    const endTime = parseFloat(document.getElementById('endTime').value);
+    const label = document.getElementById('label').value.trim();
+
+    if (isNaN(startTime) || isNaN(endTime) || !label || currentX === undefined || currentY === undefined) {
+      alert("請填寫完整的時間、標籤並框選區域");
+      return;
+    }
+
+    const region = {
+      start: startTime,
+      end: endTime,
+      region: {
+        x: Math.min(startX, currentX),
+        y: Math.min(startY, currentY),
+        width: Math.abs(currentX - startX),
+        height: Math.abs(currentY - startY)
+      },
+      label: label
+    };
+
+    regions.push(region);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    alert("區域已儲存");
+  });
+
+  document.getElementById('uploadData').addEventListener('click', async () => {
+    if (!uploadedFile) {
+      alert("請先上傳影片");
+      return;
+    }
+
+    document.getElementById('output').innerText = "上傳中，請稍候...";
+
+    try {
+      const storageRef = ref(storage, 'videos/' + uploadedFile.name);
+      await uploadBytes(storageRef, uploadedFile);
+      const videoUrl = await getDownloadURL(storageRef);
+
+      const videoId = uploadedFile.name.replace(/\.[^/.]+$/, "");
+      await setDoc(doc(db, "videos", videoId), {
+        videoUrl: videoUrl,
+        focusRegions: regions,
+        createdAt: new Date().toISOString()
+      });
+
+      document.getElementById('output').innerText =
+        `已上傳到雲端\n影片ID: ${videoId}\n影片URL:\n${videoUrl}`;
+    } catch (err) {
+      console.error("上傳失敗", err);
+      document.getElementById('output').innerText = "上傳失敗，請檢查 Firebase 設定或網路連線";
+    }
+  });
+</script>
+
+</body>
+</html>
