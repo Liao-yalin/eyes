@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <title>學生端</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <style>
+
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background: #000; color: white; touch-action: none; }
+    body.calibrating, body.calibrating * { cursor: default !important; }
+    #video-container { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
+    #video-wrapper   { position: relative; width: 900px; max-width: 95vw; background: #000; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; transition: opacity .5s; opacity: 0; }
+    #content-video   { width: 100%; height: auto; display: block; background: #000; cursor: none; }
+    #overlay-canvas  { position: absolute; inset: 0; pointer-events: none; z-index: 15; }
+    #video-container:fullscreen { background: #000; }
+    #video-container:fullscreen #video-wrapper   { width: 100vw; max-width: 100vw; height: 100vh; border-radius: 0; position: relative; }
+    #video-container:fullscreen #content-video   { width: 100vw; height: 100vh; object-fit: contain; }
+    #video-container:fullscreen #overlay-canvas  { width: 100vw; height: 100vh; }
+    #video-container:fullscreen #custom-controls { position: absolute; bottom: 0; left: 0; right: 0; z-index: 50; background: linear-gradient(transparent, rgba(0,0,0,.85)); padding: 24px 18px 14px; pointer-events: auto; }
+    #status          { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,.85); padding: 12px 18px; border-radius: 10px; border-left: 6px solid #ff4757; font-size: 14px; z-index: 101; pointer-events: none; opacity: 0; transition: opacity .4s ease; }
+    #center-msg      { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 30px; font-weight: bold; text-align: center; line-height: 1.6; background: rgba(0,0,0,.80); padding: 32px 56px; border-radius: 20px; border: 2px solid rgba(255,255,255,.15); z-index: 300; display: none; pointer-events: none; white-space: pre-line; }
+    #calibration-dot { position: absolute; width: 40px; height: 40px; background: #ff4757; border: 3px solid #fff; border-radius: 50%; display: none; z-index: 200; transform: translate(-50%,-50%); cursor: pointer !important; }
+    #eye-cursor      { position: absolute; width: 14px; height: 14px; background: #00ff00; border: 2px solid white; border-radius: 50%; pointer-events: none; z-index: 1000; transform: translate(-50%,-50%); display: none; }
+    #custom-controls    { width: 100%; background: #1a1a1a; display: flex; align-items: center; padding: 10px 18px; box-sizing: border-box; gap: 12px; z-index: 20; opacity: 0; transition: opacity .4s; }
+    #progress-container { flex-grow: 1; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
+    #progress-bar       { width: 0%; height: 100%; background: #2ed573; }
+    #custom-controls button, #speed-select { background: #333; border: none; color: white; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    #btn-recalibrate { background: #ff4757 !important; font-weight: bold; }
+    #video-input     { position: fixed; right: 20px; bottom: 20px; width: 150px; transform: scaleX(-1); border: 1px solid #444; border-radius: 10px; opacity: .6; z-index: 5; pointer-events: none; }
+  </style>
+</head>
+<body class="calibrating">
+
+<div id="video-container">
+  <div id="status"></div>
+  <div id="center-msg"></div>
+  <div id="calibration-dot"></div>
+  <div id="eye-cursor"></div>
+  <div id="video-wrapper">
+    <video id="content-video" playsinline>
+      <source src="videos/10s測試影片.mp4" type="video/mp4">
+    </video>
+    <canvas id="overlay-canvas"></canvas>
+    <div id="custom-controls">
+      <button id="btn-play-pause">播放</button>
+      <div id="progress-container"><div id="progress-bar"></div></div>
+      <span id="time-txt">00:00</span>
+      <select id="speed-select">
+        <option value="0.5">0.5x</option><option value="1" selected>1.0x</option>
+        <option value="1.5">1.5x</option><option value="2">2.0x</option>
+      </select>
+      <button id="btn-recalibrate">重新校正</button>
+      <button id="btn-fullscreen">全螢幕</button>
+    </div>
+  </div>
+</div>
+<video id="video-input" playsinline muted></video>
+
+<script>
+
+  window.GROUP_CONFIG = {
+    groupName   : '實驗組',
+    dbPath      : 'student_logs',
+    epochs      : 100,
+    enforceGaze : true, 
+    videoKey    : '10s測試影片',
+    resumeMsg   : '請點擊「播放」並看著影片以繼續。',
+  };
+</script>
+<script src="player-core.js"></script>
+
+</body>
+</html>
