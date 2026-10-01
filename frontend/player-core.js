@@ -1,7 +1,7 @@
 const CFG = window.GROUP_CONFIG;
 
 const API_BASE    = 'https://eyetrack-8w58.onrender.com';
-const CAM_W       = 320, CAM_H = 240;
+const CAM_W       = 640, CAM_H = 480;
 const EPOCHS      = CFG.epochs;
 const CONF        = 0.5;
 const INFER_MS    = 33;
